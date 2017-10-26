@@ -8,12 +8,16 @@ run performance tests across them.
 * dm-cache : cachemode=writethrough (default)
 * dm-cache : cachemode=writeback
 
-Includes utility scripts to setup and teardown the local storage devices.
-Mounted filesystems are named:
+Includes utility scripts to configure the local storage devices:
+* setup.sh
+* teardown.sh
+
+After running 'setup.sh', the mounted filesystems are named:
 * /mnt/xfshdd
 * /mnt/xfsnvme
 * /mnt/xfswritethrough
 * /mnt/xfswriteback
+teardown.sh unmounts the filesystems and removes the LVM configurations.
 
 Edit 'vars.sh' to match your systems disk configuration:
 * WTslowDEV_arr  <-- HDD to use as dm-cache writethrough origin device
