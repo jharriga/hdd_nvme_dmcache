@@ -1,0 +1,244 @@
+#--------------------------------------
+# FUNCTIONS
+
+function updatelog {
+# Echoes passed string to LOGFILE and stdout
+    echo `$DATE`": $1" 2>&1 | tee -a $LOGFILE
+}
+
+function print_Runtime {
+  echo "Runtime Environment:" | tee -a $LOGFILE
+  echo -n "> "; uname -a | tee -a $LOGFILE
+  if [ -f /etc/redhat-release ]; then
+    echo -n "> "; cat /etc/redhat-release | tee -a $LOGFILE
+  fi
+  echo -n "> "; lvcreate --version | tee -a $LOGFILE
+  echo -n "> "; mkfs.xfs -V | tee -a $LOGFILE
+  echo -n "> "; fio --version | tee -a $LOGFILE
+
+# Write key variable values to LOGFILE
+  echo "Key Variable Values:" | tee -a $LOGFILE
+  updatelog "> hddDEV=${hddDEV_arr[*]}"
+  updatelog "> nvmeDEV=${nvmeDEV_arr[*]}"
+  updatelog "> LVMcache device settings:"
+  updatelog ">>> slowDEV=${slowDEV_arr[*]}"
+  updatelog ">>> fastDEV=${fastDEV_arr[*]}"
+  updatelog ">>> slowSZ=${slowSZ} - fastSZ=${fastSZ}"
+  updatelog ">>> cacheSZ=${cacheSZ} - cacheMODE=${cacheMODE}"
+  updatelog ">>> metadataSZ=${metadataSZ}"
+  updatelog ">>> originSZ=${originSZ}"
+  echo "FIO variable settings:" | tee -a $LOGFILE
+  updatelog "> fioJOBS=${fioJOBS[*]}"
+  updatelog "---------------------------------"
+}
+
+function error_exit {
+# Function for exit due to fatal program error
+# Accepts 1 argument:
+#   string containing descriptive error message
+# Copied from - http://linuxcommand.org/wss0150.php
+    echo "${PROGNAME}: ${1:-"Unknown Error"} ABORTING..." 1>&2
+    exit 1
+}
+
+function chk_dependencies {
+  for cmd in "${DEPENDENCIES_arr[@]}"; do
+    command -v $cmd >/dev/null 2>&1 || \
+      error_exit "I require ${cmd} but it's not installed."
+  done
+}
+
+function write_scratch {
+# Write the test area/file with random 4M blocks
+  fiofn=$1
+  fiosize=$2
+
+  updatelog "Writing ${fiosize} scratch area to ${fiofn}..."
+  fio --size=${fiosize} --blocksize=4M --rw=write \
+    --ioengine=libaio --iodepth=16 --direct=1 \
+    --refill_buffers --fsync_on_close=1 \
+    --filename=${fiofn} --name=scratch_write > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+      error_exit "$LINENO: FAILURE in writing ${fiofn}"
+  fi
+}
+
+function cacheStats {
+# First parameter is device to be inspected
+# Second param is the state (start OR end)
+  LVCACHED=$1
+  STATE=$2
+
+  RESULT=$(dmsetup status ${LVCACHED})
+  if [ $? -ne 0 ]; then
+    echo "[ERROR] Unable to access <${LVCACHED}>!"
+  fi
+
+  IFS=' ' read -a RESULTS <<< "${RESULT}"
+#
+# CachePolicy = MQ Format
+#   0 3892379648 cache 8 5204/393216 128 1228751/1740800 16000290 \
+#   96139299 7608331 58288757 0 367718 0 1 writeback 2 migration_threshold \
+#   2048 mq 10 random_threshold 4 sequential_threshold 512 \
+#   discard_promote_adjustment 1 read_promote_adjustment 4 \
+#   write_promote_adjustment 8 rw -
+#
+# CachePolicy = SMQ Format
+#   0 3892379648 cache 8 5204/393216 128 1694509/1740800 16064464 \
+#   96291237 8382251 58523837 0 0 5 1 writeback 2 \
+#   migration_threshold 2048 smq 0 rw -
+#
+  MetadataBlockSize="${RESULTS[3]}"
+  NrUsedMetadataBlocks="${RESULTS[4]%%/*}"
+  NrTotalMetadataBlocks="${RESULTS[4]##*/}"
+
+  CacheBlockSize="${RESULTS[5]}"
+  NrUsedCacheBlocks="${RESULTS[6]%%/*}"
+  NrTotalCacheBlocks="${RESULTS[6]##*/}"
+
+  NrReadHits="${RESULTS[7]}"
+  NrReadMisses="${RESULTS[8]}"
+  NrWriteHits="${RESULTS[9]}"
+  NrWriteMisses="${RESULTS[10]}"
+
+  NrDemotions="${RESULTS[11]}"
+  NrPromotions="${RESULTS[12]}"
+  NrDirty="${RESULTS[13]}"
+
+#
+# Output
+  echo "** TEST ${STATE}:  LVM-CACHE STATISTICS **" | tee -a $LOGFILE
+#  lvs -o \
+#    cache_total_blocks,cache_used_blocks,cache_read_hits,cache_read_misses \
+#    ${cacheVG} | tee -a $LOGFILE
+
+  MetaUsage=$( echo "scale=1; \
+    ($NrUsedMetadataBlocks * 100) / $NrTotalMetadataBlocks" | bc)
+  CacheUsage=$( echo "scale=1; \
+    ($NrUsedCacheBlocks * 100) / $NrTotalCacheBlocks" | bc)
+  echo "> Cache Usage: ${CacheUsage}% - Metadata Usage: ${MetaUsage}%" \
+    | tee -a $LOGFILE
+
+# Calculate Read and Write Hit Rates
+# protect from divide by zero conditions
+  if (( $NrReadHits == 0 )); then
+    ReadRate=0
+  else
+    ReadRate=$( echo "scale=1; \
+      ($NrReadHits * 100) / ($NrReadMisses + $NrReadHits)" | bc)
+  fi
+  if (( $NrWriteHits == 0 )); then
+    WriteRate=0
+  else
+    WriteRate=$( echo "scale=1; \
+      ($NrWriteHits * 100) / ($NrWriteMisses + $NrWriteHits)" | bc)
+  fi
+  echo "> Read Hit Rate: ${ReadRate}% - Write Hit Rate: ${WriteRate}%" \
+    | tee -a $LOGFILE
+  echo "> Demotions/Promotions/Dirty: \
+  ${NrDemotions}/${NrPromotions}/${NrDirty}" | tee -a $LOGFILE
+
+#
+#  Calculate and print deltas
+# 'lastCS_arr' is initialized with zeros in vars.shinc
+  if [ $STATE == "start" ]; then
+    # Store current cache stats for next call to this function
+    # - used in calculating DELTA's
+    lastCS_arr[0]=$NrReadHits
+    lastCS_arr[1]=$NrReadMisses
+    lastCS_arr[2]=$NrWriteHits
+    lastCS_arr[3]=$NrWriteMisses
+    lastCS_arr[4]=$NrDemotions
+    lastCS_arr[5]=$NrPromotions
+    lastCS_arr[6]=$NrDirty
+  elif [ $STATE == "stop" ]; then
+    delta_readhits=$((NrReadHits - lastCS_arr[0]))
+    delta_readmisses=$((NrReadMisses - lastCS_arr[1]))
+    echo "> DELTA Read Hits/Read Misses: \
+    ${delta_readhits}/${delta_readmisses}" | tee -a $LOGFILE
+
+    delta_writehits=$((NrWriteHits - lastCS_arr[2]))
+    delta_writemisses=$((NrWriteMisses - lastCS_arr[3]))
+    echo "> DELTA Write Hits/Write Misses: \
+    ${delta_writehits}/${delta_writemisses}" | tee -a $LOGFILE
+
+    delta_demotions=$((NrDemotions - lastCS_arr[4]))
+    delta_promotions=$((NrPromotions - lastCS_arr[5]))
+    delta_dirty=$((NrDirty - lastCS_arr[6]))
+    echo "> DELTA Demotions/Promotions/Dirty: \
+    ${delta_demotions}/${delta_promotions}/${delta_dirty}" | tee -a $LOGFILE
+    # Reset the counters
+    lastCS_arr[0]=0
+    lastCS_arr[1]=0
+    lastCS_arr[2]=0
+    lastCS_arr[3]=0
+    lastCS_arr[4]=0
+    lastCS_arr[5]=0
+    lastCS_arr[6]=0
+  fi
+
+}
+#### END cacheStats Function 
+
+########################################################
+# FIO_PRINT functions
+function fio_runt_rw {
+  file=$1
+  runt_read=`grep "runt=" "$file" | grep read | awk -F[=,]+ '{print $8}'`
+  runtime_rw="$runt_read"
+}
+
+function fio_bw_rw {
+  file=$1
+  # unit:KB/S
+#    bw_read=`grep "bw=" "$file" | grep read | awk -F[=,B]+ '{if(match($4, /[0-9]+K$/)) {printf("%d", substr($4, 0, length($4)-1));} else {printf("%d", int($4)/1024)}}'`
+  bw_read=`grep "bw=" "$file" | grep read | \
+    awk -F[=,s]+ '{printf("%s%s", $4, "s")}'`
+#    bw_write=`grep "bw=" "$file" | grep write | awk -F[=,B]+ '{if(match($4, /[0-9]+K$/)) {printf("%d", substr($4, 0, length($4)-1));} else {printf("%d", int($4)/1024)}}'`
+  bw_write=`grep "bw=" "$file" | grep write | \
+    awk -F[=,s]+ '{printf("%s%s", $4, "s")}'`
+  bw_rw_read="$bw_read"
+  bw_rw_write="$bw_write"
+}
+
+function fio_iops_rw {
+  file=$1
+  iops_read=`grep "iops=" "$file" | grep read | awk -F[=,]+ '{print $6}'`
+  iops_write=`grep "iops=" "$file" | grep write | awk -F[=,]+ '{print $6}'`
+  iops_rw_read="$iops_read"
+  iops_rw_write="$iops_write"
+}
+
+function fio_lat_rw {
+  file=$1
+  # unit:ms
+  line=`grep "read" "$file" -A3 | grep "avg" | grep -v -E "clat|slat"`
+  lat_read=`echo $line | awk -F[=,:]+ '{if($1 == "lat (usec)") {printf("%.2f", $7/1000);} else {printf("%.2f", $7)} }'`
+  line=`grep "write" "$file" -A3 | grep "avg" | grep -v -E "clat|slat"`
+  lat_write=`echo $line | awk -F[=,:]+ '{if($1 == "lat (usec)") {printf("%.2f", $7/1000);} else {printf("%.2f", $7)} }'`
+
+  lat_rw_read="$lat_read"
+  lat_rw_write="$lat_write"
+}
+
+function fio_print {
+  fio_output=$1
+# grep the FIO output file and fill the strings
+  fio_runt_rw $fio_output
+  fio_bw_rw $fio_output
+  fio_iops_rw $fio_output
+  fio_lat_rw $fio_output
+
+# print the strings
+  echo "> RUNTIME: [runt] ${runtime_rw}"   | tee -a $LOGFILE
+  echo -n "> READ: [bw] ${bw_rw_read}"     | tee -a $LOGFILE
+  echo -n "  -  [iops] ${iops_rw_read}"    | tee -a $LOGFILE
+  echo "  -  [avg lat] ${lat_rw_read} ms"  | tee -a $LOGFILE
+  echo -n "> WRITE: [bw] ${bw_rw_write}"   | tee -a $LOGFILE
+  echo -n "  -  [iops] ${iops_rw_write}"   | tee -a $LOGFILE
+  echo "  -  [avg lat] ${lat_rw_write} ms" | tee -a $LOGFILE
+}
+
+#
+# END FUNCTIONS
+#--------------------------------------
