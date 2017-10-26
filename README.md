@@ -17,7 +17,8 @@ After running 'setup.sh', the mounted filesystems are named:
 * /mnt/xfsnvme
 * /mnt/xfswritethrough
 * /mnt/xfswriteback
-teardown.sh unmounts the filesystems and removes the LVM configurations.
+
+'teardown.sh' unmounts the filesystems and removes the LVM configurations.
 
 Edit 'vars.sh' to match your systems disk configuration:
 * WTslowDEV_arr  <-- HDD to use as dm-cache writethrough origin device
