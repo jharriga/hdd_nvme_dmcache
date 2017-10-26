@@ -30,7 +30,7 @@ Edit 'vars.sh' to match your systems disk configuration. Key variables:
 
 Workflow
 1) # ./setup.sh
-2) # ./run95G.sh
+2) # ./run95G.sh <devicemode>   "i.e. xfshdd"
 3) # ./teardown.sh
 
 The 'run95G.sh' script executes FIO runs which leave FIO output files (timestamped) in 'RESULTS' directory.
