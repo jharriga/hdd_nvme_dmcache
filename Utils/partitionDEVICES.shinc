@@ -1,0 +1,146 @@
+#
+# partitionDEVICES.shinc   <-- called by ../setup.sh
+#-----------------------
+# AFTER RUNNING lsblk output resembles:
+#
+# nvme0n1               259:0    0 372.6G  0 disk 
+# ├─nvme0n1p1           259:1    0   100G  0 part 
+# ├─nvme0n1p2           259:2    0   12G  0 part 
+# └─nvme0n1p3           259:3    0   12G  0 part 
+# 
+#sde                               8:64    0   1.8T  0 disk 
+#└─vg_WTcache0-lv_WTcached0_corig 253:9    0   100G  0 lvm  
+#  └─vg_WTcache0-lv_WTcached0     253:6    0   100G  0 lvm  /mnt/writethough0
+# sdh                               8:112  0   1.8T  0 disk 
+# └─vg_WBcache0-lv_WBcached0_corig 253:13   0   100G  0 lvm  
+#   └─vg_WBcache0-lv_WBcached0     253:10   0   100G  0 lvm  /mnt/writeback0
+# sdk                                8:160  0   1.8T  0 disk 
+# └─sdk1                             8:161  0   100G  0 part /mnt/hdd0
+#
+# Based on: https://superuser.com/questions/332252/
+#
+###############################################################
+
+# DEBUG
+#LOGFILE="./HOLDlog"
+#fastDEV="nvme0n1"
+#fastTARGET="/dev/${fastDEV}"
+# end DEBUG
+
+# First - do the 'xfshdd' HDDs
+#
+for xfshdd in "${hddDEV_arr[@]}"; do
+  echo "Partitioning $xfshdd" | tee -a $LOGFILE
+  echo "BEGIN: Listing matching device names"
+  # List the available block devices
+  lsblk | grep $xfshdd
+  sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOFxfshdd | fdisk ${xfshdd}
+    o       # clear the in memory partition table
+    n       # new partition
+    p       # primary partition
+    1       # partition number 1
+            # default, start at beginning of disk 
+    +100G   # 110 GB partition
+    p       # print the in-memory partition table
+    w       # write the partition table
+    q       # and we're done
+EOFxfshdd
+  echo "COMPLETED partitioning $xfshdd" | tee -a $LOGFILE
+done
+
+#----------------------------------
+# Second - do the NVME
+echo "Partitioning $nvmeTARGET" | tee -a $LOGFILE
+echo "BEGIN: Listing matching device names"
+# List the available block devices
+lsblk | grep $nvmeDEV | tee -a $LOGFILE
+
+# Create the partitions programatically (rather than manually)
+# The sed script strips off all the comments so that we can 
+# document what we're doing in-line with the actual commands
+# Note that a blank line (commented as "default" will send a empty
+# line terminated with a newline to take the fdisk default.
+sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOF | fdisk ${nvmeTARGET}
+  o       # clear the in memory partition table
+  n       # new partition
+  p       # primary partition
+  1       # partition number 1
+          # default, start at beginning of disk 
+  +100G   # 100 GB partition
+  n       # new partition
+  p       # primary partition
+  2       # partition number 2
+          # default, start immediately after preceding partition
+  +12G   # 100 GB partition
+  n       # new partition
+  p       # primary partition
+  3       # partition number 3
+          # default, start immediately after preceeding partition
+  +12G   # 100 GB partition
+  p       # print the in-memory partition table
+  w       # write the partition table
+  q       # and we're done
+EOF
+
+echo "COMPLETED partitioning $nvmeDEV" | tee -a $LOGFILE
+lsblk | grep $nvmeDEV | tee -a $LOGFILE
+
+#----------------------------------
+# Third - do the WRITETHROUGH LVMcached HDDs
+# Delete any existing partitions
+#
+for hdd in "${WTslowDEV_arr[@]}"; do
+  echo "Partitioning $hdd" | tee -a $LOGFILE
+  echo "Checking if ${hdd} is in use, if yes abort"
+  mount | grep ${hdd}
+  if [ $? == 0 ]; then
+    echo "Device ${hdd} is mounted - ABORTING Test!"
+    exit 1
+  fi
+
+# Clears any existing partition table and creates a new one
+#   with a single partion that is the entire disk
+    (echo o; echo n; echo p; echo 1; echo; echo; echo w) | \
+      fdisk ${hdd} >> $LOGFILE
+# Now delete that partition
+  for partition in $(parted -s ${hdd} print|awk '/^ / {print $1}'); do
+    echo "Removing parition: dev=${hdd} - partition=${partition}"
+    parted -s $hdd rm ${partition}
+    if [ $? != 0 ]; then
+      echo "$LINENO: Unable to remove ${partition} from ${hdd}"
+      exit 1
+    fi
+  done
+  echo "COMPLETED removed any partitions from: $hdd" | tee -a $LOGFILE
+done
+
+#----------------------------------
+# Fourth - do the WRITEBACK LVMcached HDDs
+# Delete any existing partitions
+#
+for hdd in "${WBslowDEV_arr[@]}"; do
+  echo "Partitioning $hdd" | tee -a $LOGFILE
+  echo "Checking if ${hdd} is in use, if yes abort"
+  mount | grep ${hdd}
+  if [ $? == 0 ]; then
+    echo "Device ${hdd} is mounted - ABORTING Test!"
+    exit 1
+  fi
+
+# Clears any existing partition table and creates a new one
+#   with a single partion that is the entire disk
+    (echo o; echo n; echo p; echo 1; echo; echo; echo w) | \
+      fdisk ${hdd} >> $LOGFILE
+# Now delete that partition
+  for partition in $(parted -s ${hdd} print|awk '/^ / {print $1}'); do
+    echo "Removing parition: dev=${hdd} - partition=${partition}"
+    parted -s $hdd rm ${partition}
+    if [ $? != 0 ]; then
+      echo "$LINENO: Unable to remove ${partition} from ${hdd}"
+      exit 1
+    fi
+  done
+  echo "COMPLETED removed any partitions from: $hdd" | tee -a $LOGFILE
+done
+
+echo "COMPLETED partitioning all devices" | tee -a $LOGFILE
