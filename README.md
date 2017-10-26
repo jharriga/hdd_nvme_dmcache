@@ -20,7 +20,7 @@ After running 'setup.sh', the mounted filesystems are named:
 
 'teardown.sh' unmounts the filesystems and removes the LVM configurations.
 
-Edit 'vars.sh' to match your systems disk configuration. Key variables:
+# Edit 'vars.sh' to match your systems disk configuration. Key variables:
 * WTslowDEV_arr  <-- HDD to use as dm-cache writethrough origin device
 * WBslowDEV_arr  <-- HDD to use as dm-cache writeback origin device
 * WTfastDEV_arr  <-- NVMe partition to use as dm-cache writethrough fast device
