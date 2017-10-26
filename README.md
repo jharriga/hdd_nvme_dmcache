@@ -33,4 +33,4 @@ Edit 'vars.sh' to match your systems disk configuration. Key variables:
 2) ./run95G.sh
 3) ./teardown.sh
 
-The 'run95G.sh' script executes FIO runs which leave FIO output files (timestamped) in 'RESULTS' directory.
+The 'run95G.sh' script requires that a device-mode be specified, one of: xfshdd; xfsnvme; xfswritethrough or xfswriteback. The script executes FIO runs which leave their output files (timestamped) in the 'RESULTS' directory.
