@@ -28,9 +28,9 @@ Edit 'vars.sh' to match your systems disk configuration. Key variables:
 * hdd_DEV_arr    <-- device to use for HDD device tests
 * nvmeDEV_arr    <-- NVMe partition to use for NVME device tests
 
-Workflow
-1) # ./setup.sh
-2) # ./run95G.sh
-3) # ./teardown.sh
+# Workflow
+1) ./setup.sh
+2) ./run95G.sh
+3) ./teardown.sh
 
 The 'run95G.sh' script executes FIO runs which leave FIO output files (timestamped) in 'RESULTS' directory.
