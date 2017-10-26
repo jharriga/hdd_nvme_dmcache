@@ -20,7 +20,7 @@ After running 'setup.sh', the mounted filesystems are named:
 
 'teardown.sh' unmounts the filesystems and removes the LVM configurations.
 
-Edit 'vars.sh' to match your systems disk configuration:
+Edit 'vars.sh' to match your systems disk configuration. Key variables:
 * WTslowDEV_arr  <-- HDD to use as dm-cache writethrough origin device
 * WBslowDEV_arr  <-- HDD to use as dm-cache writeback origin device
 * WTfastDEV_arr  <-- NVMe partition to use as dm-cache writethrough fast device
@@ -33,4 +33,4 @@ Workflow
 2) # ./run95G.sh
 3) # ./teardown.sh
 
-Leaves FIO output files (timestamped) in 'RESULTS' directory.
+The 'run95G.sh' script executes FIO runs which leave FIO output files (timestamped) in 'RESULTS' directory.
