@@ -1,0 +1,141 @@
+#-------------------------------------
+# TEARDOWN_DEVICES.sh
+# Tears-down the XFSHDD, XFSNVME and XFSCACHED configurations
+#
+
+updatelog "teardownDEVICES.sh begin"
+
+# Store mountID for root fs
+rootID=$(stat -c%d /)
+
+############################
+updatelog "Working on XFSHDD devices"
+
+# FOR Loop - umount the number of specified XFSHDD devices
+for (( cntr=0; cntr < $numdevs; cntr++ )); do
+  hddmnt="${hddMNT}$cntr"
+  # If mounted then umount
+  if [ -d "$hddmnt" ]; then
+    cacheID=$(stat -c%d "${hddmnt}")
+    if (( rootID == cacheID )); then
+      updatelog "${hddmnt} not mounted - skip umount"
+    else
+      updatelog "${hddmnt} being umounted and removed"
+      umount ${hddmnt} || error_exit "$LINENO: Unable to umount ${hddmnt}"
+      rmdir  ${hddmnt} || error_exit "$LINENO: Unable to rmdir ${hddmnt}"
+    fi
+  fi
+done
+
+############################
+updatelog "Working on XFSNVME devices"
+
+# FOR Loop - umount the number of specified XFSNVME devices
+for (( cntr1=0; cntr1 < $numdevs; cntr1++ )); do
+  nvmemnt="${nvmeMNT}$cntr1"
+  # If mounted then umount
+  if [ -d "$nvmemnt" ]; then
+    cacheID=$(stat -c%d "${nvmemnt}")
+    if (( rootID == cacheID )); then
+      updatelog "${nvmemnt} not mounted - skip umount"
+    else
+      updatelog "${nvmemnt} being umounted and removed"
+      umount ${nvmemnt} || error_exit "$LINENO: Unable to umount ${nvmemnt}"
+      rmdir  ${nvmemnt} || error_exit "$LINENO: Unable to rmdir ${nvmemnt}"
+    fi
+  fi
+done
+
+############################
+updatelog "Working on WRITETHROUGH XFSCACHED devices"
+
+# FOR Loop - remove the number of specified XFSCACHED devices
+#   Operations: umount, lvremove, vgremove, pvremove
+for (( cntr2=0; cntr2 < $numdevs; cntr2++ )); do
+  # Assign vars for this loop
+  slowdev="${WTslowDEV_arr[$cntr2]}"
+  fastdev="${WTfastDEV_arr[$cntr2]}"
+  cachevg="${WTcacheVG}$cntr2"
+  cachedlv="${WTcachedLV}$cntr2"
+  cachedmnt="${WTcachedMNT}$cntr2"
+
+  # If mounted then umount
+  if [ -d "$cachedmnt" ]; then
+    cacheID=$(stat -c%d "${cachedmnt}")
+    if (( rootID == cacheID )); then
+      updatelog "${cachedmnt} not mounted - skip umount"
+    else
+      updatelog "${cachedmnt} being umounted and removed"
+      umount ${cachedmnt} || error_exit "$LINENO: Unable to umount ${cachedmnt}"
+      rmdir  ${cachedmnt} || error_exit "$LINENO: Unable to rmdir ${cachedmnt}"
+    fi
+  fi
+
+  # Remove the cached LV
+  cachedlvpath="/dev/${cachevg}/${cachedlv}"
+  lvremove --force ${cachedlvpath} || \
+    error_exit "$LINENO: Unable to lvremove ${cachedlvpath}"
+  updatelog "lvremove of ${cachedlvpath} complete"
+
+  # Remove the VG
+  vgremove --force ${cachevg} || \
+    error_exit "$LINENO: Unable to vgremove ${cachevg}"
+  updatelog "vgremove of ${cachevg} complete"
+
+  # Remove the PVs
+  pvremove --force --yes ${fastdev} || \
+    error_exit "$LINENO: Unable to pvremove ${fastdev}"
+  updatelog "pvremove of ${fastdev} complete"
+  pvremove --force --yes ${slowdev} || \
+    error_exit "$LINENO: Unable to pvremove ${slowdev}"
+  updatelog "pvremove of ${slowdev} complete"
+done       # end FOR
+
+############################
+updatelog "Working on WRITEBACK XFSCACHED devices"
+
+# FOR Loop - remove the number of specified XFSCACHED devices
+#   Operations: umount, lvremove, vgremove, pvremove
+for (( cntr3=0; cntr3 < $numdevs; cntr3++ )); do
+  # Assign vars for this loop
+  slowdev="${WBslowDEV_arr[$cntr3]}"
+  fastdev="${WBfastDEV_arr[$cntr3]}"
+  cachevg="${WBcacheVG}$cntr3"
+  cachedlv="${WBcachedLV}$cntr3"
+  cachedmnt="${WBcachedMNT}$cntr3"
+
+  # If mounted then umount
+  if [ -d "$cachedmnt" ]; then
+    cacheID=$(stat -c%d "${cachedmnt}")
+    if (( rootID == cacheID )); then
+      updatelog "${cachedmnt} not mounted - skip umount"
+    else
+      updatelog "${cachedmnt} being umounted and removed"
+      umount ${cachedmnt} || error_exit "$LINENO: Unable to umount ${cachedmnt}"
+      rmdir  ${cachedmnt} || error_exit "$LINENO: Unable to rmdir ${cachedmnt}"
+    fi
+  fi
+
+  # Remove the cached LV
+  cachedlvpath="/dev/${cachevg}/${cachedlv}"
+  lvremove --force ${cachedlvpath} || \
+    error_exit "$LINENO: Unable to lvremove ${cachedlvpath}"
+  updatelog "lvremove of ${cachedlvpath} complete"
+
+  # Remove the VG
+  vgremove --force ${cachevg} || \
+    error_exit "$LINENO: Unable to vgremove ${cachevg}"
+  updatelog "vgremove of ${cachevg} complete"
+
+  # Remove the PVs
+  pvremove --force --yes ${fastdev} || \
+    error_exit "$LINENO: Unable to pvremove ${fastdev}"
+  updatelog "pvremove of ${fastdev} complete"
+  pvremove --force --yes ${slowdev} || \
+    error_exit "$LINENO: Unable to pvremove ${slowdev}"
+  updatelog "pvremove of ${slowdev} complete"
+done       # end FOR
+
+updatelog "teardownDEVICES.sh done"
+#
+# END teardownDEVICES.sh
