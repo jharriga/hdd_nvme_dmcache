@@ -1,0 +1,239 @@
+#
+# SETUP_DEVICES.shinc    <-- called by ../setup.sh
+#-------------------
+#
+# NOTE that originLV = cachedLV (as set in vars.shinc)
+#
+
+updatelog "setupDEVICES.sh begin"
+
+updatelog "Creating XFSHDD devices"
+# FOR Loop - create the number of specified XFSHDD devices
+for (( cntr=0; cntr < $numdevs; cntr++ )); do
+  hddid="${hddDEV_arr[cntr]}"
+  hdddev="${hddid}${hddPARTNUM}"      # append the partition number
+  hddmnt="${hddMNT}$cntr"
+  # mkfs and mount cmds for XFSHDD
+  # Using mkfs & mount syntax to match RHCS OSD procedures
+  yes | mkfs.xfs -f -i size=2048 -q ${hdddev} || \
+      error_exit "$LINENO: Unable to mkfs.xfs ${hdddev}"
+  if [ ! -d ${hddmnt} ]; then
+      mkdir ${hddmnt} || error_exit "$LINENO: Unable to mkdir ${hddmnt}"
+  fi
+  mount -t xfs -o rw,noatime,inode64 ${hdddev} ${hddmnt} || \
+      error_exit "$LINENO: Unable to mount ${hddmnt}"
+
+  hddtmp="${hddmnt}/testfile"
+  touch ${hddtmp} || \
+      error_exit "$LINENO: Unable to create file ${hddtmp}"
+  rm -f ${hddtmp}
+  updatelog "${hddtmp} : file created and removed"
+done         # end FOR LOOP
+
+updatelog "Creating XFSNVME devices"
+# FOR Loop - create the number of specified XFSNVME devices
+for (( cntr1=0; cntr1 < $numdevs; cntr1++ )); do
+  nvmedev="${nvmeDEV_arr[cntr1]}"
+  nvmemnt="${nvmeMNT}$cntr1"
+  # mkfs and mount cmds for XFSNVME
+  # Using mkfs & mount syntax to match RHCS OSD procedures
+  yes | mkfs.xfs -f -i size=2048 -q ${nvmedev} || \
+      error_exit "$LINENO: Unable to mkfs.xfs ${nvmedev}"
+  if [ ! -d ${nvmemnt} ]; then
+      mkdir ${nvmemnt} || error_exit "$LINENO: Unable to mkdir ${nvmemnt}"
+  fi
+  mount -t xfs -o rw,noatime,inode64 ${nvmedev} ${nvmemnt} || \
+      error_exit "$LINENO: Unable to mount ${nvmemnt}"
+
+  nvmetmp="${nvmemnt}/testfile"
+  touch ${nvmetmp} || \
+      error_exit "$LINENO: Unable to create file ${nvmetmp}"
+  rm -f ${nvmetmp}
+  updatelog "${nvmetmp} : file created and removed"
+done         # end FOR LOOP
+
+####### BEGIN WRITETHROUGH setup
+updatelog "Creating WRITETHROUGH XFSCACHED devices"
+# FOR Loop - create the number of specified XFSCACHED devices
+for (( cntr2=0; cntr2 < $numdevs; cntr2++ )); do
+  # assign vars for this loop - WRITETHROUGH
+  slowdev="${WTslowDEV_arr[$cntr2]}"
+  fastdev="${WTfastDEV_arr[$cntr2]}"
+  cachevg="${WTcacheVG}$cntr2"
+  originlv="${WToriginLV}$cntr2"
+  cachedatalv="${WTcachedataLV}$cntr2"
+  cachemetalv="${WTcachemetaLV}$cntr2"
+  cachedmnt="${WTcachedMNT}$cntr2"
+  cachemode="${WTcacheMODE}"
+  cachepolicy="${WTcachePOLICY}"
+
+  # Step 1: create single Volume Group from two devices (fast and slow)
+  pvcreate --yes ${slowdev} || \
+    error_exit "$LINENO: Unable to pvcreate ${slowdev}."
+  updatelog "pvcreate of ${slowdev} complete"
+  pvcreate --yes ${fastdev} || \
+    error_exit "$LINENO: Unable to pvcreate ${fastdev}."
+  updatelog "pvcreate of ${fastdev} complete"
+  vgcreate --yes ${cachevg} ${slowdev} ${fastdev} || \
+    error_exit "$LINENO: Unable to vgcreate ${cachevg}."
+  updatelog "vgcreate of ${cachevg} complete"
+
+  # Step 2: create origin LV
+  yes | lvcreate -L ${originSZ} -n ${originlv} ${cachevg} ${slowdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${originlv}."
+  updatelog "lvcreate of ${originlv} complete"
+
+  # Step 3: create cache data LV
+  yes | lvcreate -L ${cacheSZ} -n ${cachedatalv} ${cachevg} ${fastdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${cachedatalv}."
+  updatelog "lvcreate of ${cachedatalv} complete"
+
+  # Step 4: create cache metadata LV
+  yes | lvcreate -L ${metadataSZ} -n ${cachemetalv} ${cachevg} ${fastdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${cachemetalv}."
+  updatelog "lvcreate of ${cachemetalv} complete"
+
+  # Step 5: create cache pool LV
+  # Built from cache data and cache metadata LVs
+  # NOTE that originLV = cachedLV (as set in vars.shinc)
+  meta="${cachevg}/${cachemetalv}"
+  cache="${cachevg}/${cachedatalv}"
+  origin="${cachevg}/${originlv}"
+  lvconvert --yes --force --type cache-pool --cachemode ${cachemode} \
+    --poolmetadata ${meta} ${cache} || \
+    error_exit "$LINENO: Unable to lvconvert ${cache}."
+  updatelog "lvconvert of ${cache} complete"
+
+  # Step 6: create cachedLV by combining cache pool and origin LVs
+  # NOTE that originLV = cachedLV (as set in vars.shinc)
+  lvconvert --yes --force --type cache --cachepool ${cache} ${origin} || \
+    error_exit "$LINENO: Unable to lvconvert ${origin}."
+  updatelog "lvconvert of ${origin} complete"
+
+  cachedlvpath="/dev/${cachevg}/${originlv}"
+  updatelog "cachedLV ${cachedlvpath} created"
+
+  # Step 7: list LVM devices
+  lvs -a -o +devices 2>&1 | tee -a $LOGFILE
+
+  # Step7a: list LVMcache settings
+  lvs -o+cache_mode ${origin} 2>&1 | tee -a $LOGFILE
+  lvs -o+chunksize ${origin} 2>&1 | tee -a $LOGFILE
+  lvs -o+cache_policy,cache_settings ${origin} 2>&1 | tee -a $LOGFILE
+
+  # Step 8: mkfs and mount cmds for cachedLV
+  # Using mkfs & mount syntax to match RHCS OSD procedures
+  yes | mkfs.xfs -f -i size=2048 -q ${cachedlvpath} || \
+      error_exit "$LINENO: Unable to mkfs.xfs ${cachedlvpath}"
+  if [ ! -d ${cachedmnt} ]; then
+      mkdir ${cachedmnt} || error_exit "$LINENO: Unable to mkdir ${cachedmnt}"
+  fi
+  mount -t xfs -o rw,noatime,inode64 ${cachedlvpath} ${cachedmnt} || \
+      error_exit "$LINENO: Unable to mount ${cachedmnt}"
+
+  cachedtmp="${cachedmnt}/testfile"
+  touch ${cachedtmp} || \
+      error_exit "$LINENO: Unable to create file ${cachedtmp}"
+  rm -f ${cachedtmp}
+  updatelog "${cachedtmp} : file created and removed"
+done         # end FOR LOOP
+
+# List mounted filesystems
+df -T  | grep "${cachedMNT}"
+
+####### END WRITETHROUGH setup
+
+####### BEGIN WRITEBACK setup
+updatelog "Creating WRITEBACK XFSCACHED devices"
+# FOR Loop - create the number of specified XFSCACHED devices
+for (( cntr3=0; cntr3 < $numdevs; cntr3++ )); do
+  # assign vars for this loop - WRITETHROUGH
+  slowdev="${WBslowDEV_arr[$cntr3]}"
+  fastdev="${WBfastDEV_arr[$cntr3]}"
+  cachevg="${WBcacheVG}$cntr3"
+  originlv="${WBoriginLV}$cntr3"
+  cachedatalv="${WBcachedataLV}$cntr3"
+  cachemetalv="${WBcachemetaLV}$cntr3"
+  cachedmnt="${WBcachedMNT}$cntr3"
+  cachemode="${WBcacheMODE}"
+  cachepolicy="${WBcachePOLICY}"
+
+  # Step 1: create single Volume Group from two devices (fast and slow)
+  pvcreate --yes ${slowdev} || \
+    error_exit "$LINENO: Unable to pvcreate ${slowdev}."
+  updatelog "pvcreate of ${slowdev} complete"
+  pvcreate --yes ${fastdev} || \
+    error_exit "$LINENO: Unable to pvcreate ${fastdev}."
+  updatelog "pvcreate of ${fastdev} complete"
+  vgcreate --yes ${cachevg} ${slowdev} ${fastdev} || \
+    error_exit "$LINENO: Unable to vgcreate ${cachevg}."
+  updatelog "vgcreate of ${cachevg} complete"
+
+  # Step 2: create origin LV
+  yes | lvcreate -L ${originSZ} -n ${originlv} ${cachevg} ${slowdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${originlv}."
+  updatelog "lvcreate of ${originlv} complete"
+
+  # Step 3: create cache data LV
+  yes | lvcreate -L ${cacheSZ} -n ${cachedatalv} ${cachevg} ${fastdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${cachedatalv}."
+  updatelog "lvcreate of ${cachedatalv} complete"
+
+  # Step 4: create cache metadata LV
+  yes | lvcreate -L ${metadataSZ} -n ${cachemetalv} ${cachevg} ${fastdev} || \
+    error_exit "$LINENO: Unable to lvcreate ${cachemetalv}."
+  updatelog "lvcreate of ${cachemetalv} complete"
+
+  # Step 5: create cache pool LV
+  # Built from cache data and cache metadata LVs
+  # NOTE that originLV = cachedLV (as set in vars.shinc)
+  meta="${cachevg}/${cachemetalv}"
+  cache="${cachevg}/${cachedatalv}"
+  origin="${cachevg}/${originlv}"
+  lvconvert --yes --force --type cache-pool --cachemode ${cachemode} \
+    --poolmetadata ${meta} ${cache} || \
+    error_exit "$LINENO: Unable to lvconvert ${cache}."
+  updatelog "lvconvert of ${cache} complete"
+
+  # Step 6: create cachedLV by combining cache pool and origin LVs
+  # NOTE that originLV = cachedLV (as set in vars.shinc)
+  lvconvert --yes --force --type cache --cachepool ${cache} ${origin} || \
+    error_exit "$LINENO: Unable to lvconvert ${origin}."
+  updatelog "lvconvert of ${origin} complete"
+
+  cachedlvpath="/dev/${cachevg}/${originlv}"
+  updatelog "cachedLV ${cachedlvpath} created"
+
+  # Step 7: list LVM devices
+  lvs -a -o +devices 2>&1 | tee -a $LOGFILE
+
+  # Step7a: list LVMcache settings
+  lvs -o+cache_mode ${origin} 2>&1 | tee -a $LOGFILE
+  lvs -o+chunksize ${origin} 2>&1 | tee -a $LOGFILE
+  lvs -o+cache_policy,cache_settings ${origin} 2>&1 | tee -a $LOGFILE
+
+  # Step 8: mkfs and mount cmds for cachedLV
+  # Using mkfs & mount syntax to match RHCS OSD procedures
+  yes | mkfs.xfs -f -i size=2048 -q ${cachedlvpath} || \
+      error_exit "$LINENO: Unable to mkfs.xfs ${cachedlvpath}"
+  if [ ! -d ${cachedmnt} ]; then
+      mkdir ${cachedmnt} || error_exit "$LINENO: Unable to mkdir ${cachedmnt}"
+  fi
+  mount -t xfs -o rw,noatime,inode64 ${cachedlvpath} ${cachedmnt} || \
+      error_exit "$LINENO: Unable to mount ${cachedmnt}"
+
+  cachedtmp="${cachedmnt}/testfile"
+  touch ${cachedtmp} || \
+      error_exit "$LINENO: Unable to create file ${cachedtmp}"
+  rm -f ${cachedtmp}
+  updatelog "${cachedtmp} : file created and removed"
+done         # end FOR LOOP
+
+# List mounted filesystems
+df -T  | grep "${cachedMNT}"
+
+####### END WRITEBACK setup
+
+updatelog "setupDEVICES.sh done"
+#
+# END setupDEVICES.sh
